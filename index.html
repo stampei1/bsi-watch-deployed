@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="build" content="20261011174734">
+<title>BSI Watch</title>
+<meta name="description" content="Demo: bloodstream-infection risk from stool microbiome for an allo-HCT unit.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=20261011174734">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 17h4l2-6 4 12 2-6h4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div class="name">BSI Watch</div>
+  </div>
+  <div class="daynav" role="group" aria-label="Day">
+    <button id="prevDay" class="icon" aria-label="Previous day">‹</button>
+    <div class="day"><span class="lbl">Day</span><span id="dayNum">—</span></div>
+    <button id="nextDay" class="icon" aria-label="Next day">›</button>
+  </div>
+  <div class="tools">
+    <button id="aboutBtn" class="link">About</button>
+    <button id="themeBtn" class="icon" aria-label="Toggle dark mode">◐</button>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="left">
+    <p id="summary" class="summary"></p>
+    <div id="list" class="card-table"></div>
+  </section>
+  <section class="right">
+    <article id="detail" class="detail"></article>
+  </section>
+</main>
+
+<footer class="foot">Demo with retrospective, de-identified MSK allo-HCT data on a simulated unit · not for clinical use</footer>
+
+<div id="about" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+  <div class="sheet wide">
+    <button class="icon close" data-close aria-label="Close">×</button>
+    <h2 id="aboutTitle">About</h2>
+    <p class="lead">Each new stool sample gives two scores: the model's estimate of the risk of an <i>E. coli</i> and of an <i>Enterococcus</i>
+      bloodstream infection (BSI) in the next 14 days. Patients are grouped by what needs a look today: a new positive blood culture,
+      a High or Watch score that has not been reviewed (or rose to a higher tier since the last review), reviewed, and low risk.</p>
+    <div id="aboutTiers"></div>
+    <h3>Review burden</h3>
+    <p id="aboutBurden" class="fine" style="font-size:13px"></p>
+    <p class="fine">Rates are the share of stool samples in each tier followed by that infection within 14 days, in the retrospective MSK allo-HCT cohort.
+      Scores come from models that never saw the patient shown (cross-validation); cut-offs were chosen on the same cohort and have not been
+      validated prospectively. Patients are real de-identified timelines placed together on a simulated unit; bed numbers are made up.
+      Reviews are a demo of the workflow and are stored only in this browser.</p>
+    <p class="aboutlinks"><button id="factsLink" class="link small">Model facts: population, performance, calibration and warnings →</button>
+      <button id="resetReviews" class="link small">Reset demo reviews</button> <span id="resetNote" class="fine"></span></p>
+  </div>
+</div>
+
+<div id="facts" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="factsTitle">
+  <div class="sheet wide">
+    <button class="icon close" data-close aria-label="Close">×</button>
+    <h2 id="factsTitle">Model facts</h2>
+    <div id="factsBody"></div>
+  </div>
+</div>
+<script src="app.js?v=20261011174734"></script>
+</body>
+</html>
