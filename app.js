@@ -12,7 +12,9 @@ const AUC = { ecoli: { model: 0.897, abundance: 0.827 }, entero: { model: 0.816,
 // Review choices: workflow steps only. DRAFT wording (2026-10-11) — for Isaac to approve.
 const REVIEW_CHOICES = ['Reviewed – no change', 'Discuss at rounds', 'Notify attending'];
 const RKEY = 'bsiwd-reviews-v1';
-const S = { W: null, day: 24, sel: null, histOpen: false, reviews: {}, mem: false, lane: null, pinned: null };
+const LANDING = 24;                       // the unit day the demo opens on
+const S = { W: null, day: LANDING, sel: null, histOpen: false, reviews: {}, mem: false, lane: null, pinned: null,
+  seedOn: true, seed: {}, cache: new Map() };
 const $ = (id) => document.getElementById(id);
 const pct = (v, d) => v == null ? '—' : (v * 100).toFixed(d ?? (v < 0.01 ? 2 : 1)) + '%';
 const abTxt = (v) => v == null ? '—' : v === 0 ? 'not detected' : v < 0.001 ? '<0.1%' : (v * 100).toFixed(v < 0.1 ? 1 : 0) + '%';
@@ -34,12 +36,17 @@ function loadReviews() {
 function saveReviews() {
   try { localStorage.setItem(RKEY, JSON.stringify(S.reviews)); } catch (e) { S.mem = true; }
 }
+function seedSetting(get, val) {
+  try { if (get) return localStorage.getItem('bsiwd-seed'); localStorage.setItem('bsiwd-seed', val); } catch (e) { return null; }
+}
 function theme(get, val) { try { if (get) return localStorage.getItem('bsiw-theme'); localStorage.setItem('bsiw-theme', val); } catch (e) { return null; } }
 
 async function init() {
   const t = theme(true); if (t) document.documentElement.dataset.theme = t;
   loadReviews();
+  S.seedOn = seedSetting(true) !== 'off';
   S.W = await (await fetch(`data/ward.json?v=${BUILD}`)).json();
+  S.seed = replay(LANDING - 1).sim;                    // simulated reviews for every day before the landing day
   checkReasonCoverage();
   S.day = Math.min(Math.max(S.day, S.W.span[0]), S.W.span[1]);
   $('prevDay').onclick = () => go(-1);
@@ -53,6 +60,9 @@ async function init() {
   $('aboutBtn').onclick = () => { about(); show('about'); };
   $('factsLink').onclick = () => { $('about').classList.add('hidden'); facts(); show('facts'); };
   $('resetReviews').onclick = () => { S.reviews = {}; saveReviews(); about(); render(); $('resetNote').textContent = 'Demo reviews cleared.'; };
+  document.querySelectorAll('input[name="seed"]').forEach(r => r.onchange = () => {
+    S.seedOn = r.value === 'on' && r.checked ? true : r.value === 'off' && r.checked ? false : S.seedOn;
+    seedSetting(false, S.seedOn ? 'on' : 'off'); about(); render(); });
   document.querySelectorAll('.modal').forEach(m => m.addEventListener('click', (e) => {
     if (e.target === m || e.target.hasAttribute('data-close')) m.classList.add('hidden'); }));
   $('themeBtn').onclick = () => {
@@ -69,6 +79,10 @@ function go(d) { S.day = Math.min(Math.max(S.day + d, S.W.span[0]), S.W.span[1])
 // ------------------------------------------------------------------ status of one patient on one day (data up to day d only)
 function tierOf(o, p) { const t = S.W.tiers[o]; return p >= t.high ? 'high' : p >= t.watch ? 'watch' : 'low'; }
 function status(pt, d) {
+  const key = pt.bed + ':' + d; if (S.cache.has(key)) return S.cache.get(key);
+  const r = statusRaw(pt, d); S.cache.set(key, r); return r;
+}
+function statusRaw(pt, d) {
   const past = pt.samples.filter(s => s.d <= d);
   const last = past[past.length - 1];
   const out = { last, age: last ? d - last.d : null, org: {} };
@@ -91,37 +105,54 @@ function status(pt, d) {
 }
 
 // ------------------------------------------------------------------ review state
-// A review counts only on days at or after the day it was made. A patient needs review when their highest tier is
-// High or Watch and either (a) there is no review yet, or (b) a stool result newer than the last review puts an
-// organism in a higher tier than at that review (Low → Watch, Watch → High). Same or lower tier does not re-open.
+// A review counts only on unit days at or after the day it was made. A patient needs review when their highest tier is
+// High or Watch and either (a) there is no review yet; (b) a stool result newer than the last review puts an organism
+// in a higher tier than at that review (Low → Watch, Watch → High); or (c) since the last review an organism was Low or
+// had no recent stool on some day and is now High or Watch again. Otherwise the same or a lower tier does not re-open.
+const ELEV = (t) => t === 'high' || t === 'watch';
+function reviewsFor(bed, store) {
+  if (store) return store[bed] || [];
+  const seed = S.seedOn ? (S.seed[bed] || []) : [];
+  return [...seed, ...(S.reviews[bed] || [])].sort((a, b) => a.day - b.day);
+}
 function lastReview(pt, d, store) {
-  const rs = (store[pt.bed] || []).filter(r => r.day <= d);
+  const rs = reviewsFor(pt.bed, store).filter(r => r.day <= d);
   return rs.length ? rs[rs.length - 1] : null;
 }
-function needsReview(pt, s, d, store) {
-  if (s.culture.length || !(s.tier === 'high' || s.tier === 'watch')) return false;
+function needsReview(pt, s, d, store, gapRule = true) {
+  if (s.culture.length || !ELEV(s.tier)) return false;
   const r = lastReview(pt, d, store);
   if (!r) return true;
-  return ORGS.some(o => { const os = s.org[o];
-    if (!(os.tier === 'high' || os.tier === 'watch')) return false;
+  return ORGS.some(o => {
+    const os = s.org[o];
+    if (!ELEV(os.tier)) return false;
     const was = r.tiers[o] in RANK ? RANK[r.tiers[o]] : 0;
-    return os.s && os.s.d > (r.sampleDay[o] ?? -Infinity) && RANK[os.tier] > Math.max(was, RANK.low); });
+    if (os.s && os.s.d > (r.sampleDay[o] ?? -Infinity) && RANK[os.tier] > Math.max(was, RANK.low)) return true;   // (b)
+    if (!gapRule) return false;
+    for (let t = r.day + 1; t < d; t++)                                                                      // (c)
+      if (pt.stay[0] <= t && !ELEV(status(pt, t).org[o].tier)) return true;
+    return false;
+  });
 }
-function makeReview(s, d, choice, note) {
+function makeReview(s, d, choice, note, simulated) {
   const tiers = {}, sampleDay = {};
   for (const o of ORGS) { tiers[o] = s.org[o].tier; sampleDay[o] = s.org[o].s ? s.org[o].s.d : null; }
-  return { day: d, choice, note: (note || '').slice(0, 200), tiers, sampleDay };
+  return { day: d, choice, note: (note || '').slice(0, 200), tiers, sampleDay, ...(simulated ? { simulated: true } : {}) };
 }
-function burden(upTo) {                               // replay: every needs-review patient reviewed the same day, "no change"
+function replay(upTo, gapRule = true) {               // every needs-review patient reviewed the same day, "no change"
   const sim = {}, perDay = [];
   for (let d = S.W.span[0]; d <= upTo; d++) {
     let n = 0;
     for (const pt of S.W.patients.filter(p => p.stay[0] <= d && d <= p.stay[1])) {
       const s = status(pt, d);
-      if (needsReview(pt, s, d, sim)) { n++; (sim[pt.bed] = sim[pt.bed] || []).push(makeReview(s, d, REVIEW_CHOICES[0], '')); }
+      if (needsReview(pt, s, d, sim, gapRule)) { n++; (sim[pt.bed] = sim[pt.bed] || []).push(makeReview(s, d, REVIEW_CHOICES[0], '', true)); }
     }
     perDay.push(n);
   }
+  return { sim, perDay };
+}
+function burden(upTo, gapRule = true) {
+  const { perDay } = replay(upTo, gapRule);
   return { mean: perDay.reduce((a, b) => a + b, 0) / perDay.length, min: Math.min(...perDay), max: Math.max(...perDay), days: perDay.length };
 }
 
@@ -198,21 +229,22 @@ function render() {
   const byRisk = (a, b) => RANK[b[1].tier] - RANK[a[1].tier] || (b[1].org[b[1].top].p || 0) - (a[1].org[a[1].top].p || 0);
   const cult = st.filter(([, s]) => s.culture.length).sort(byRisk);
   const rest = st.filter(([, s]) => !s.culture.length);
-  const need = rest.filter(([p, s]) => needsReview(p, s, d, S.reviews)).sort(byRisk);
-  const done = rest.filter(([p, s]) => (s.tier === 'high' || s.tier === 'watch') && !needsReview(p, s, d, S.reviews)).sort(byRisk);
-  const low = rest.filter(([, s]) => !(s.tier === 'high' || s.tier === 'watch')).sort(byRisk);
+  const need = rest.filter(([p, s]) => needsReview(p, s, d)).sort(byRisk);
+  const done = rest.filter(([p, s]) => ELEV(s.tier) && !needsReview(p, s, d)).sort(byRisk);
+  const due = rest.filter(([, s]) => s.tier === 'due' || s.tier === 'na').sort(byRisk);    // newest stool > 7 days old, or never scored
+  const low = rest.filter(([, s]) => s.tier === 'low').sort(byRisk);
   const nHigh = rest.filter(([, s]) => s.tier === 'high').length, nNew = st.filter(([, s]) => s.isNew).length;
   $('summary').innerHTML = `<b>${plural(st.length, 'patient')}</b> · <span class="${nHigh ? 'hi' : ''}">${nHigh} high risk</span> · ` +
     `<span class="${need.length ? 'nr' : ''}">${need.length} need review</span>` + (nNew ? ` · ${nNew} new today` : '') +
     (cult.length ? ` · <span class="hi">${plural(cult.length, 'positive blood culture')}</span>` : '');
-  const all = [...cult, ...need, ...done, ...low];
+  const all = [...cult, ...need, ...done, ...due, ...low];
   if (!S.sel || !st.some(([p]) => p.bed === S.sel)) S.sel = (need[0] || cult[0] || all[0])?.[0].bed ?? null;
   const section = (title, rows, cls) => rows.length ? `<tr class="sec ${cls}"><th colspan="7">${title} <span class="cnt">${rows.length}</span></th></tr>` +
     rows.map(([p, s]) => rowHTML(p, s, d)).join('') : '';
   $('list').innerHTML = `<table class="grid"><thead><tr><th>Bed</th><th class="c-pt">Patient</th><th class="c-num" title="Day relative to transplant">HCT day</th>
-    <th class="c-num" title="Maximum temperature, last 24 h (°F)">Temp</th><th class="c-st" title="Age of the newest stool result">Stool</th><th class="c-sc">E. coli</th>
+    <th class="c-num c-temp" title="Maximum temperature, last 24 h (°F)">Temp</th><th class="c-st" title="Age of the newest stool result">Stool</th><th class="c-sc">E. coli</th>
     <th class="c-sc"><span class="long">Enterococcus</span><span class="short">Entero.</span></th></tr></thead><tbody>
-    ${section('Positive blood culture', cult, 'cult')}${section('Needs review', need, 'need')}${section('Reviewed', done, 'done')}${section('Low risk / no recent stool', low, 'low')}
+    ${section('Positive blood culture', cult, 'cult')}${section('Needs review', need, 'need')}${section('Reviewed', done, 'done')}${section('No recent stool', due, 'due')}${section('Low risk', low, 'low')}
     </tbody></table>`;
   $('list').querySelectorAll('tr.row').forEach(r => {
     const pick = () => { S.sel = +r.dataset.bed; render();
@@ -230,20 +262,21 @@ function cell(s, o, d) {
   if (os.prev) {
     const pp = os.prev['p_' + o];
     ar = os.p > pp * 1.05 ? '↑' : os.p < pp / 1.05 ? '↓' : '→';
-    tip = ` title="previous sample (day ${dayTxt(os.prev.hct)}): ${pct(pp)}${os.prevTier !== os.tier ? ` · ${TIER_LABEL[os.prevTier]} → ${TIER_LABEL[os.tier]}` : ''}"`;
+    tip = ` title="previous sample (day ${dayTxt(os.prev.hct)} after transplant): ${pct(pp)}${os.prevTier !== os.tier ? ` · ${TIER_LABEL[os.prevTier]} → ${TIER_LABEL[os.tier]}` : ''}"`;
   }
   return `<span class="score ${os.tier}"${tip}>${pct(os.p)}</span>${ar ? `<i class="ar ${ar === '↑' ? 'up' : ar === '↓' ? 'dn' : 'eq'}"${tip}>${ar}</i>` : ''}${os.isNew ? '<span class="newtag">New</span>' : ''}`;
 }
 function rowHTML(p, s, d) {
-  const c = context(p, d), rv = lastReview(p, d, S.reviews);
+  const c = context(p, d), rv = lastReview(p, d);
   const stool = s.last ? (s.age === 0 ? 'today' : `${s.age} d`) : '—';
+  const dueTag = !s.culture.length && (s.tier === 'due' || s.tier === 'na') ? '<span class="duetag">stool due</span>' : '';
   return `<tr class="row ${S.sel === p.bed ? 'sel' : ''}" data-bed="${p.bed}" tabindex="0">
     <td class="c-bed">${p.bed}</td>
     <td class="c-pt"><span class="pid">${p.pid}</span>${s.culture.length ? '<span class="tag" title="positive blood culture in the last 7 days">+BC</span>' : ''}${
-      rv && !s.culture.length && (s.tier === 'high' || s.tier === 'watch') && !needsReview(p, s, d, S.reviews) ? `<span class="rvd" title="Reviewed day ${rv.day}: ${esc(rv.choice)}">✓</span>` : ''}</td>
+      rv && !s.culture.length && ELEV(s.tier) && !needsReview(p, s, d) ? `<span class="rvd" title="Reviewed on unit day ${rv.day}${rv.simulated ? ' (simulated)' : ''}: ${esc(rv.choice)}">✓</span>` : ''}</td>
     <td class="c-num">${dayTxt(c.hct)}</td>
-    <td class="c-num">${tempTxt(c.tmax)}</td>
-    <td class="c-st ${s.last && s.age > STALE ? 'old' : ''}">${stool}</td>
+    <td class="c-num c-temp">${tempTxt(c.tmax)}</td>
+    <td class="c-st ${!s.last || s.age > STALE || s.tier === 'na' ? 'old' : ''}">${stool}${dueTag}</td>
     <td class="c-sc">${cell(s, 'ecoli', d)}</td>
     <td class="c-sc">${cell(s, 'entero', d)}</td></tr>`;
 }
@@ -285,21 +318,24 @@ function hero(p, os, o, c, d) {
   let change = '';
   if (os.prev) {
     const pp = os.prev['p_' + o], dir = os.p > pp * 1.05 ? '↑ up from' : os.p < pp / 1.05 ? '↓ down from' : '→ about the same as';
-    change = `<div class="chg">${dir} ${pct(pp)} (day ${dayTxt(os.prev.d - p.hct_shift)})${os.prevTier !== os.tier ? ` · <b>${TIER_LABEL[os.prevTier]} → ${TIER_LABEL[os.tier]}</b>` : ''}</div>`;
+    change = `<div class="chg">${dir} ${pct(pp)} (day ${dayTxt(os.prev.d - p.hct_shift)} after transplant)${os.prevTier !== os.tier ? ` · <b>${TIER_LABEL[os.prevTier]} → ${TIER_LABEL[os.tier]}</b>` : ''}</div>`;
   }
   return `<div class="hero ${os.tier}"><div class="hl"><span class="oname">${NI[o]} BSI risk, next 14 days</span>
       <span class="hr"><span class="score ${os.tier}">${TIER_LABEL[os.tier]}</span><button class="info" data-facts="${o}" aria-label="Model facts for ${NAME[o]}" title="Model facts">ⓘ</button></span></div>
     <div class="big"><span class="num">${pct(os.p)}</span></div>${change}
-    <div class="srcline">From a stool sample ${os.age === 0 ? 'taken today' : plural(os.age, 'day') + ' ago'} (day ${dayTxt(os.s.d - p.hct_shift)})</div>
+    <div class="srcline">From a stool sample ${os.age === 0 ? 'taken today' : plural(os.age, 'day') + ' ago'} (day ${dayTxt(os.s.d - p.hct_shift)} after transplant)</div>
     <p class="say">About <b>${oneIn(st.rate)}</b> stool samples at this level were followed by an ${NI[o]} BSI within 14 days.</p>
     <div class="whyh">What raised the model's score</div>${rs.length ? `<ul class="why">${rs.map(r =>
       `<li tabindex="0" ${r.lane ? `data-lane="${r.lane}"` : ''} ${r.note ? `title="${esc(r.note)}"` : ''}><span>${r.txt}${r.note ? ' <span class="nl">ⓘ</span>' : ''}</span></li>`).join('')}</ul>`
       : `<p class="nosingle">${NO_SINGLE}</p>`}</div>`;
 }
 function reviewHTML(p, s, d) {
-  const rv = lastReview(p, d, S.reviews), need = needsReview(p, s, d, S.reviews);
-  const status = rv ? `<div class="rvlast ${need ? 'stale' : ''}">${need ? 'Earlier review' : 'Reviewed'} on day ${rv.day}: <b>${esc(rv.choice)}</b>${rv.note ? ` — “${esc(rv.note)}”` : ''}${
-    need ? '<br><span>A newer stool result raised a tier since then.</span>' : ''}</div>` : '';
+  const rv = lastReview(p, d), need = needsReview(p, s, d);
+  const why = need && rv ? (ORGS.some(o => { const os = s.org[o]; const was = rv.tiers[o] in RANK ? RANK[rv.tiers[o]] : 0;
+      return ELEV(os.tier) && os.s && os.s.d > (rv.sampleDay[o] ?? -Infinity) && RANK[os.tier] > Math.max(was, RANK.low); })
+    ? 'A newer stool result raised a tier since then.' : 'A score was Low or had no recent stool since then and is elevated again.') : '';
+  const status = rv ? `<div class="rvlast ${need ? 'stale' : ''}">${need ? 'Earlier review' : 'Reviewed'} on unit day ${rv.day}${rv.simulated ? ' <span class="sim">simulated</span>' : ''}:
+    <b>${esc(rv.choice)}</b>${rv.note ? ` — “${esc(rv.note)}”` : ''}${why ? `<br><span>${why}</span>` : ''}</div>` : '';
   return `<div class="review"><div class="rvh">Review <span class="draft" title="Workflow choices only; wording is a draft">draft</span></div>${status}
     <div class="rvchoices" role="radiogroup" aria-label="Review choice">${REVIEW_CHOICES.map((c, i) =>
       `<button class="rvc" role="radio" aria-checked="false" data-choice="${i}">${c}</button>`).join('')}</div>
@@ -363,7 +399,7 @@ function history(p, d, W) {
         o += `<path d="${path}H${x(d)}" class="hline"/>`;
         for (const s of pts.filter(s => s.d >= d0)) {
           const v = s['p_' + org], t = tierOf(org, v);
-          o += `<circle cx="${x(s.d)}" cy="${ly(v)}" r="${t === 'low' ? 2.6 : 3.4}" class="hpt ${t}"><title>${NAME[org]} · day ${dayTxt(hct(s.d))}: ${pct(v)} (${TIER_LABEL[t]})</title></circle>`;
+          o += `<circle cx="${x(s.d)}" cy="${ly(v)}" r="${t === 'low' ? 2.6 : 3.4}" class="hpt ${t}"><title>${NAME[org]} · day ${dayTxt(hct(s.d))} after transplant: ${pct(v)} (${TIER_LABEL[t]})</title></circle>`;
         }
       }
     } else if (r.key === 'ab') {
@@ -373,7 +409,7 @@ function history(p, d, W) {
         const pts = p.samples.filter(s => s['ab_' + org] != null && s.d <= d && s.d >= d0);
         if (!pts.length) continue;
         o += `<path d="${pts.map((s, i) => `${i ? 'L' : 'M'}${x(s.d)},${ly(s['ab_' + org])}`).join('')}" class="hab-${cls}"/>` +
-          pts.map(s => `<circle cx="${x(s.d)}" cy="${ly(s['ab_' + org])}" r="2" class="hdot-${cls}"><title>${NAME[org]} in stool, day ${dayTxt(hct(s.d))}: ${abTxt(s['ab_' + org])}</title></circle>`).join('');
+          pts.map(s => `<circle cx="${x(s.d)}" cy="${ly(s['ab_' + org])}" r="2" class="hdot-${cls}"><title>${NAME[org]} in stool, day ${dayTxt(hct(s.d))} after transplant: ${abTxt(s['ab_' + org])}</title></circle>`).join('');
       }
       o += `<line x1="${G + 6}" x2="${G + 22}" y1="${r.y + 9}" y2="${r.y + 9}" class="hab-a"/><text x="${G + 25}" y="${r.y + 12}" class="htick" font-style="italic">E. coli</text>
         <line x1="${G + 64}" x2="${G + 80}" y1="${r.y + 9}" y2="${r.y + 9}" class="hab-b"/><text x="${G + 83}" y="${r.y + 12}" class="htick" font-style="italic">Enterococcus</text>`;
@@ -384,7 +420,7 @@ function history(p, d, W) {
         o += `<text x="${G - 6}" y="${yy + 9}" class="htick" text-anchor="end">${esc(n.length > ML ? n.slice(0, ML - 1) + '…' : n)}<title>${esc(n)}</title></text>`;
         for (const [nn, a, b] of p.drugs) if (nn === n && b >= d0 && a <= d) {
           const xa = x(Math.max(a, d0) - 0.4), xb = x(Math.min(b, d) + 0.4);
-          o += `<rect x="${xa}" y="${yy + 1}" width="${Math.max(2, xb - xa)}" height="${H.lane - 3}" rx="2" class="habx"><title>${esc(n)} · day ${dayTxt(hct(a))} to ${dayTxt(hct(Math.min(b, d)))}</title></rect>`;
+          o += `<rect x="${xa}" y="${yy + 1}" width="${Math.max(2, xb - xa)}" height="${H.lane - 3}" rx="2" class="habx"><title>${esc(n)} · day ${dayTxt(hct(a))} to ${dayTxt(hct(Math.min(b, d)))} after transplant</title></rect>`;
         }
       });
     } else if (r.key === 'anc') {
@@ -397,7 +433,7 @@ function history(p, d, W) {
       const ds = [...byDay.keys()].sort((a, b) => a - b);
       if (!ds.length) none(r);
       else o += `<path d="${ds.map((t, i) => `${i ? 'L' : 'M'}${x(t)},${ly(byDay.get(t))}`).join('')}" class="hline thin"/>` +
-        ds.map(t => `<circle cx="${x(t)}" cy="${ly(byDay.get(t))}" r="1.8" class="hdot"><title>ANC day ${dayTxt(hct(t))}: ${byDay.get(t)}</title></circle>`).join('');
+        ds.map(t => `<circle cx="${x(t)}" cy="${ly(byDay.get(t))}" r="1.8" class="hdot"><title>ANC, day ${dayTxt(hct(t))} after transplant: ${byDay.get(t)}</title></circle>`).join('');
     } else if (r.key === 'temp') {
       const lo = 96, hi = 104, ly = (v) => r.y + r.h - (Math.max(lo, Math.min(hi, v)) - lo) / (hi - lo) * r.h;
       frame(r); label(r, 'Temperature', 'daily max, °F');
@@ -405,11 +441,11 @@ function history(p, d, W) {
       const pts = p.temp.filter(([t]) => t >= d0 && t <= d);
       if (!pts.length) none(r);
       else o += `<path d="${pts.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t)},${ly(v)}`).join('')}" class="hline thin"/>` +
-        pts.map(([t, v]) => `<circle cx="${x(t)}" cy="${ly(v)}" r="${v >= 100.4 ? 2.6 : 1.8}" class="${v >= 100.4 ? 'hfever' : 'hdot'}"><title>Temp day ${dayTxt(hct(t))}: ${v} °F</title></circle>`).join('');
+        pts.map(([t, v]) => `<circle cx="${x(t)}" cy="${ly(v)}" r="${v >= 100.4 ? 2.6 : 1.8}" class="${v >= 100.4 ? 'hfever' : 'hdot'}"><title>Temperature, day ${dayTxt(hct(t))} after transplant: ${v} °F</title></circle>`).join('');
     }
   }
   for (const [t, a] of p.infections) if (t >= d0 && t <= d)
-    o += `<line x1="${x(t)}" x2="${x(t)}" y1="2" y2="${y - H.gap}" class="hbsi"><title>Positive blood culture: ${agent(a)}</title></line>`;
+    o += `<line x1="${x(t)}" x2="${x(t)}" y1="2" y2="${y - H.gap}" class="hbsi"><title>Positive blood culture: ${agent(a)} (day ${dayTxt(hct(t))} after transplant)</title></line>`;
   o += `<line x1="${x(d)}" x2="${x(d)}" y1="2" y2="${y - H.gap}" class="htoday"/>`;
   return o + '</svg>';
 }
@@ -432,8 +468,9 @@ function about() {
     taken in the 14 days before an infection, <b>Watch</b> at the one that catches ${w}%. Same definition and numbers as BSI Timeline.</p>` + tierTable(ORGS);
   const b = burden(S.day);
   $('aboutBurden').innerHTML = `On this simulated unit, this rule asked for about <b>${b.mean.toFixed(1)}</b> reviews a day (range ${b.min}–${b.max}),
-    over days ${S.W.span[0]}–${S.day} so far, assuming every patient is reviewed the day they appear under Needs review.
+    over unit days ${S.W.span[0]}–${S.day} so far, assuming every patient is reviewed the day they appear under Needs review.
     This depends on this unit's patients and how often their stool was sampled.`;
+  document.querySelectorAll('input[name="seed"]').forEach(r => { r.checked = (r.value === 'on') === S.seedOn; });
   $('resetNote').textContent = S.mem ? 'Browser storage is unavailable: reviews last for this visit only.' : '';
 }
 function facts(focus) {

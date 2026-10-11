@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<meta name="build" content="20261011174734">
+<meta name="build" content="20261011175804">
 <title>BSI Watch</title>
 <meta name="description" content="Demo: bloodstream-infection risk from stool microbiome for an allo-HCT unit.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=20261011174734">
+<link rel="stylesheet" href="style.css?v=20261011175804">
 </head>
 <body>
 <header class="top">
@@ -18,9 +18,9 @@
     <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M8 17h4l2-6 4 12 2-6h4" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
     <div class="name">BSI Watch</div>
   </div>
-  <div class="daynav" role="group" aria-label="Day">
+  <div class="daynav" role="group" aria-label="Unit day">
     <button id="prevDay" class="icon" aria-label="Previous day">‹</button>
-    <div class="day"><span class="lbl">Day</span><span id="dayNum">—</span></div>
+    <div class="day"><span class="lbl">Unit day</span><span id="dayNum">—</span></div>
     <button id="nextDay" class="icon" aria-label="Next day">›</button>
   </div>
   <div class="tools">
@@ -49,6 +49,14 @@
       bloodstream infection (BSI) in the next 14 days. Patients are grouped by what needs a look today: a new positive blood culture,
       a High or Watch score that has not been reviewed (or rose to a higher tier since the last review), reviewed, and low risk.</p>
     <div id="aboutTiers"></div>
+    <h3>Demo reviews</h3>
+    <div class="seedopts" role="radiogroup" aria-label="Starting point">
+      <label><input type="radio" name="seed" value="on"> Start with earlier days reviewed</label>
+      <label><input type="radio" name="seed" value="off"> Start fresh from unit day 6</label>
+    </div>
+    <p class="fine" style="font-size:13px">With earlier days reviewed, every patient who needed review before unit day 24 is shown as reviewed
+      ("Reviewed – no change", marked <i>simulated</i>) on the day they first needed it, so the list opens without a backlog.
+      Saving a review on an earlier unit day removes the reviews you made on later unit days.</p>
     <h3>Review burden</h3>
     <p id="aboutBurden" class="fine" style="font-size:13px"></p>
     <p class="fine">Rates are the share of stool samples in each tier followed by that infection within 14 days, in the retrospective MSK allo-HCT cohort.
@@ -67,6 +75,6 @@
     <div id="factsBody"></div>
   </div>
 </div>
-<script src="app.js?v=20261011174734"></script>
+<script src="app.js?v=20261011175804"></script>
 </body>
 </html>
